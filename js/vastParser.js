@@ -188,18 +188,18 @@ export class VASTParser {
                 adSource.followRedirects = _adSource[0].getAttribute('followRedirects');
                 // if adsource is provided, adData must be also provided
                 // we don't support customAdData here
-                var vastAdData = _adSource[0].getElementsByTagName('vmap:AdTagURI'),
+                var vastAdData = _adSource[0].getElementsByTagName('VAST'),
                     adTagURI = _adSource[0].getElementsByTagName('vmap:AdTagURI');
                 if (!(vastAdData && adTagURI)) {
                     throw new Error('Parsing VASTResponse Error - At least one adData must be provided.');
                 }
-                if (adTagURI) {
+                if (adTagURI.length) {
                     adSource.URI = adTagURI[0].textContent || adTagURI[0].innerText;
                     adSource.templateType = adTagURI[0].getAttribute('templateType');
                 }
-                if (vastAdData) {
+                if (vastAdData.length) {
                     // parse embeded VAST response
-                    this.parseVASTResponse(_adSource.getElementsByTagName('VAST'));
+                    this.parseVASTResponse(vastAdData[0]);
                 }
             }
             // tracking events
@@ -248,11 +248,13 @@ export class VASTParser {
             ads.sequence = _ads[i].getAttribute('sequence');
             ads.conditionalId = _ads[i].getAttribute('conditionalId');
             var wrapper = _ads[i].getElementsByTagName('Wrapper'),
-                inline = _ads[i].getElementsByTagName('Inline');
+                inline = _ads[i].getElementsByTagName('InLine');
             if (wrapper.length) {
-                ads.inline = this.parseInlineAd(inline);
-            } else {
                 ads.wrapper = this.parseWrapperAd(wrapper);
+            } else if(inline.length) {
+            	ads.inline = this.parseInlineAd(inline);
+            } else {
+            	throw new Error('Parsing VASTResponse Error - Can\'t found an InLine or Wrapper Ad.');
             }
             response.ads.push(ads);
         }
@@ -262,13 +264,13 @@ export class VASTParser {
     parseInlineAd(inline) {
         // survey, category and viewableImpression are not implemented.
         var inlineAd = {},
-            adSystem = inline.getElementsByTagName('AdSystem'),
-            adTitle = inline.getElementsByTagName('AdTitle'),
-            impression = inline.getElementsByTagName('Impression'),
-            description = inline.getElementsByTagName('Description'),
-            advertiser = inline.getElementsByTagName('Advertiser'),
-            error = inline.getElementsByTagName('Error'),
-            creatives = inline.getElementsByTagName('Creatives');
+            adSystem = inline[0].getElementsByTagName('AdSystem'),
+            adTitle = inline[0].getElementsByTagName('AdTitle'),
+            impression = inline[0].getElementsByTagName('Impression'),
+            description = inline[0].getElementsByTagName('Description'),
+            advertiser = inline[0].getElementsByTagName('Advertiser'),
+            error = inline[0].getElementsByTagName('Error'),
+            creatives = inline[0].getElementsByTagName('Creatives');
 
         if (adSystem[0]) {
             inlineAd.adSystem = adSystem[0].innerHTML;
@@ -279,46 +281,94 @@ export class VASTParser {
             inlineAd.impressionId = impression[0].getAttribute('Id');
         }
         inlineAd.adTitle = adTitle[0] ? adTitle[0].innerHTML : null;
-        inlineAd.adDescription = description[0] ? description[0].innerHTML : null;
+        inlineAd.adDescription = description[0] ? 
+                                 description[0].textContent || description[0].innerText : null;
         inlineAd.advertiser = advertiser[0] ? advertiser[0].innerHTML : null;
-        inlineAd.error = error[0] ? error[0].textContent || error[0].innerText : null;
+        inlineAd.error = error[0] ? error[0].textContent.replace('[ERRORCODE]', 900) || 
+                         error[0].innerText.replace('[ERRORCODE]', 900) : null;
         // handling creatives
         if (creatives.length) {
-            var creative = creatives[0].firstElementChild;
-            inline.creatives = [];
-            while (creative) {
+            var creativeNode = creatives[0].firstElementChild;
+            inlineAd.creatives = [];
+            while (creativeNode) {
                 // creativeExtensions is not implemented.
-                creative.id = creative.getAttribute('Id');
-                creative.adId = creative.getAttribute('adId');
-                creative.sequence = creative.getAttribute('sequence');
-                creative.apiFramework = creative.getAttribute('apiFramework');
-                var universalAdId = creative.getElementsByTagName('UniversalAdId'), // not implemented
-                    linearAd = creative.getElementsByTagName('Linear'),
-                    nonlinearAd = creative.getElementsByTagName('NonLinearAds');
+                var creative = {};
+                creative.id = creativeNode.getAttribute('id');
+                creative.adId = creativeNode.getAttribute('adId');
+                creative.sequence = creativeNode.getAttribute('sequence');
+                creative.apiFramework = creativeNode.getAttribute('apiFramework');
+                var universalAdId = creativeNode.getElementsByTagName('UniversalAdId'), // not implemented
+                    linearAdNode = creativeNode.getElementsByTagName('Linear'),
+                    nonlinearAd = creativeNode.getElementsByTagName('NonLinearAds');
                 // handling linear ads
-                if (linear[0]) {
-                	var linearAd = {},
-                	    duration = linear[0].getElementsByTagName('Duration'),
-                	    mediaFiles = linear[0].getElementsByTagName('MediaFiles'),
-                	    adParameters = linear[0].getElementsByTagName('AdParameters'),
-                	    trackingEvents = linear[0].getElementsByTagName('TrackingEvents'),
-                	    videoClicks = linear[0].getElementsByTagName('VideoClicks'),
-                	    icons = linear[0].getElementsByTagName('Icons');
-                	linearAd.skipoffset = linear[0].getAttribute('skipoffset');
-                	if(!duration[0]) {
-                		throw new Error('Parsing VASTResponse Error - Duration is not specified.');
-                	}
-                	if(!isTimeFormatValid(duration[0]))
-                		throw new Error('Parsing VASTResponse Error - Invalid Duration format.');
-                	creative.linearAd = linearAd;
+                if (linearAdNode[0]) {
+                    var linearAd = {},
+                        duration = linearAdNode[0].getElementsByTagName('Duration'),
+                        mediaFiles = linearAdNode[0].getElementsByTagName('MediaFiles'),
+                        adParameters = linearAdNode[0].getElementsByTagName('AdParameters'),
+                        trackingEvents = linearAdNode[0].getElementsByTagName('TrackingEvents'),
+                        videoClicks = linearAdNode[0].getElementsByTagName('VideoClicks'),
+                        icons = linearAdNode[0].getElementsByTagName('Icons');
+                    linearAd.skipoffset = linearAdNode[0].getAttribute('skipoffset');
+                    if (!duration[0]) {
+                        throw new Error('Parsing VASTResponse Error - Duration is not specified.');
+                    }
+                    if (!isTimeFormatValid(duration[0].innerHTML))
+                        throw new Error('Parsing VASTResponse Error - Invalid Duration format.');
+                    linearAd.duration = duration[0].innerHTML;
+                    if (adParameters.length) {
+                        linearAd.adParameters = [];
+                        for (var i = 0; i < adParameters.length; i++) {
+                            var adParam = {};
+                            adParam.metadata = adParameters[i].innerHTML;
+                            adParam.isXmlEncoded = adParameters[i].getAttribute('xmlEncoded');
+                            linearAd.adParameters.push(adParam);
+                        }
+                    }
+                    // handling mediafiles 
+                    // mezzanine is not supported for now, error code 406 is return.
+                    var mediaFileNodes = mediaFiles[0].getElementsByTagName('MediaFile'),
+                        interactiveCreativeFile = mediaFiles[0].getElementsByTagName('InteractiveCreativeFile');
+                    if (mediaFiles.length) {
+                        linearAd.mediaFiles = [];
+                        linearAd.interactiveCreativeFile = [];
+                        [].map.call(mediaFileNodes, (node) => {
+                        	var mediaFile = {};
+                            mediaFile.delivery = node.getAttribute('delivery');
+                            mediaFile.type = node.getAttribute('type');
+                            mediaFile.width = node.getAttribute('width');
+                            mediaFile.height = node.getAttribute('height');
+                            mediaFile.codec = node.getAttribute('codec');
+                            mediaFile.id = node.getAttribute('id');
+                            mediaFile.bitrate = node.getAttribute('bitrate');
+                            mediaFile.minBitrate = node.getAttribute('minBitrate');
+                            mediaFile.maxBitrate = node.getAttribute('maxBitrate');
+                            mediaFile.scalable = node.getAttribute('scalable');
+                            mediaFile.maintainAspectRatio = node.getAttribute('maintainAspectRatio');
+                            mediaFile.apiFramework = node.getAttribute('apiFramework');
+                            mediaFile.URI = node.textContent || node.innerText;
+                            linearAd.mediaFiles.push(mediaFile);
+                        });
+
+                        [].map.call(interactiveCreativeFile, (node) => {
+                        	var interactCF = {};
+                        	interactCF.mimeType = node.getAttribute('type');
+                        	interactCF.apiFramework = node.getAttribute('apiFramework');
+                        	interactCF.URI = node.textContent || node.innerText;
+                        	linearAd.interactiveCreativeFile.push(interactCF);
+                        });
+                    }
+                    creative.linearAd = linearAd;
                 }
-                creative = creative.nextElementSibling;
+                inlineAd.creatives.push(creative);
+                creativeNode = creativeNode.nextElementSibling;
             }
         }
+        console.log(inlineAd);
+        return inlineAd;
     }
 
     parseWrapperAd(wrapper) {
-        var inlineAd = {};
-        inlineAd.adSystem = inline.getElementsByTagName('AdSystem')[0];
+        
     }
 }
