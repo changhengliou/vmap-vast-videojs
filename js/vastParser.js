@@ -158,6 +158,7 @@ export class VASTParser {
         this.parseVMAPResponse = this.parseVMAPResponse.bind(this);
         this.parseInlineAd = this.parseInlineAd.bind(this);
         this.parseWrapperAd = this.parseWrapperAd.bind(this);
+        this.parseTrackingEvents = this.parseTrackingEvents.bind(this);
     }
 
     parseFromString(string) {
@@ -251,10 +252,10 @@ export class VASTParser {
                 inline = _ads[i].getElementsByTagName('InLine');
             if (wrapper.length) {
                 ads.wrapper = this.parseWrapperAd(wrapper);
-            } else if(inline.length) {
-            	ads.inline = this.parseInlineAd(inline);
+            } else if (inline.length) {
+                ads.inline = this.parseInlineAd(inline);
             } else {
-            	throw new Error('Parsing VASTResponse Error - Can\'t found an InLine or Wrapper Ad.');
+                throw new Error('Parsing VASTResponse Error - Can\'t found an InLine or Wrapper Ad.');
             }
             response.ads.push(ads);
         }
@@ -270,7 +271,8 @@ export class VASTParser {
             description = inline[0].getElementsByTagName('Description'),
             advertiser = inline[0].getElementsByTagName('Advertiser'),
             error = inline[0].getElementsByTagName('Error'),
-            creatives = inline[0].getElementsByTagName('Creatives');
+            creatives = inline[0].getElementsByTagName('Creatives'),
+            adVerifications = inline[0].getElementsByTagName('AdVerifications');
 
         if (adSystem[0]) {
             inlineAd.adSystem = adSystem[0].innerHTML;
@@ -281,11 +283,38 @@ export class VASTParser {
             inlineAd.impressionId = impression[0].getAttribute('Id');
         }
         inlineAd.adTitle = adTitle[0] ? adTitle[0].innerHTML : null;
-        inlineAd.adDescription = description[0] ? 
-                                 description[0].textContent || description[0].innerText : null;
+        inlineAd.adDescription = description[0] ?
+            description[0].textContent || description[0].innerText : null;
         inlineAd.advertiser = advertiser[0] ? advertiser[0].innerHTML : null;
-        inlineAd.error = error[0] ? error[0].textContent.replace('[ERRORCODE]', 900) || 
-                         error[0].innerText.replace('[ERRORCODE]', 900) : null;
+        inlineAd.error = error[0] ? error[0].textContent.replace('[ERRORCODE]', 900) ||
+            error[0].innerText.replace('[ERRORCODE]', 900) : null;
+        // handling verication
+        inlineAd.adVerifications = [];
+        if (adVerifications.length) {
+            [].map.call(adVerifications.children, (verify) => {
+                var verification = {},
+                    vendor = verify.getAttribute('vendor'),
+                    ele = verify.firstElementChild;
+                verification.vendor = vendor.textContent || vendor.innerText;
+                switch (ele.tagName.toLowerCase()) {
+                    case 'javascriptresource':
+                        verification.URI = ele.textContent || ele.innerText;
+                        verification.type = 'JavaScript';
+                        verification.apiFramework = ele.getAttribute('apiFramework');
+                        break;
+                    case 'flashresource':
+                        verification.URI = ele.textContent || ele.innerText;
+                        verification.type = 'Flash';
+                        verification.apiFramework = ele.getAttribute('apiFramework');
+                        break;
+                    case 'viewableimpression':
+                        verification.type = 'viewableImpression';
+                        verification.id = ele.getAttribute('id');
+                    default:
+                        throw new Error('Parsing VASTResponse Error - Invalid AdVerifications element.');
+                }
+            });
+        }
         // handling creatives
         if (creatives.length) {
             var creativeNode = creatives[0].firstElementChild;
@@ -299,7 +328,8 @@ export class VASTParser {
                 creative.apiFramework = creativeNode.getAttribute('apiFramework');
                 var universalAdId = creativeNode.getElementsByTagName('UniversalAdId'), // not implemented
                     linearAdNode = creativeNode.getElementsByTagName('Linear'),
-                    nonlinearAd = creativeNode.getElementsByTagName('NonLinearAds');
+                    nonlinearAdNode = creativeNode.getElementsByTagName('NonLinearAds'),
+                    companionAdNode = creativeNode.getElementsByTagName('CompanionAds');
                 // handling linear ads
                 if (linearAdNode[0]) {
                     var linearAd = {},
@@ -333,7 +363,7 @@ export class VASTParser {
                         linearAd.mediaFiles = [];
                         linearAd.interactiveCreativeFile = [];
                         [].map.call(mediaFileNodes, (node) => {
-                        	var mediaFile = {};
+                            var mediaFile = {};
                             mediaFile.delivery = node.getAttribute('delivery');
                             mediaFile.type = node.getAttribute('type');
                             mediaFile.width = node.getAttribute('width');
@@ -351,24 +381,225 @@ export class VASTParser {
                         });
 
                         [].map.call(interactiveCreativeFile, (node) => {
-                        	var interactCF = {};
-                        	interactCF.mimeType = node.getAttribute('type');
-                        	interactCF.apiFramework = node.getAttribute('apiFramework');
-                        	interactCF.URI = node.textContent || node.innerText;
-                        	linearAd.interactiveCreativeFile.push(interactCF);
+                            var interactCF = {};
+                            interactCF.mimeType = node.getAttribute('type');
+                            interactCF.apiFramework = node.getAttribute('apiFramework');
+                            interactCF.URI = node.textContent || node.innerText;
+                            linearAd.interactiveCreativeFile.push(interactCF);
+                        });
+                    }
+                    // handling videoClicks
+                    if (videoClicks.length) {
+                        linearAd.videoClicks = {
+                            clickThrough: [],
+                            clickTracking: [],
+                            customClick: []
+                        };
+                        var videoClickNode = videoClicks[0].children;
+                        [].map.call(videoClickNode, (node) => {
+                            var vcNode = {};
+                            vcNode.URI = node.textContent || node.innerText;
+                            vcNode.Id = node.getAttribute('id');
+                            switch (node.tagName.toLowerCase()) {
+                                case 'clickthrough':
+                                    linearAd.videoClicks.clickThrough.push(vcNode);
+                                    break;
+                                case 'clicktracking':
+                                    linearAd.videoClicks.clickTracking.push(vcNode);
+                                    break;
+                                case 'customclick':
+                                    linearAd.videoClicks.customClick.push(vcNode);
+                                    break;
+                                default:
+                                    throw new Error('Parsing VASTResponse Error - Invalid VideoClicks Element.');
+                            }
+                        });
+                    }
+                    // handling trackingEvents
+                    if (trackingEvents.length) {
+                        linearAd.trackingEvents = this.parseTrackingEvents(trackingEvents[0]);
+                    }
+                    // handling icons
+                    if (icons.length) {
+                        var iconsNode = icons[0].children;
+                        linearAd.icons = [];
+                        [].map.call(iconsNode, (node) => {
+                            var staticResource = node.getElementsByTagName('StaticResource'),
+                                iframeResource = node.getElementsByTagName('IFrameResource'),
+                                HTMLResource = node.getElementsByTagName('HTMLResource'),
+                                iconClicks = node.getElementsByTagName('IconClicks'),
+                                iconViewTracking = node.getElementsByTagName('IconViewTracking'),
+                                icon = {
+                                    iconViewTracking: [],
+                                    iconClicks: {
+                                        iconClickThrough: [],
+                                        iconClickTracking: []
+                                    }
+                                };
+                            icon.program = node.getAttribute('program');
+                            icon.width = node.getAttribute('width');
+                            icon.height = node.getAttribute('height');
+                            icon.xPosition = node.getAttribute('xPosition');
+                            icon.yPosition = node.getAttribute('yPosition');
+                            icon.duration = node.getAttribute('duration');
+                            icon.offset = node.getAttribute('offset');
+                            icon.apiFramework = node.getAttribute('apiFramework');
+                            icon.pxratio = node.getAttribute('pxratio');
+                            [].map.call(iconViewTracking, (tracking) => {
+                                icon.iconViewTracking.push(tracking.textContent || tracking.innerText);
+                            });
+                            if (iconClicks.length) {
+                                [].map.call(iconClicks.children, (click) => {
+                                    var icNode = {};
+                                    icNode.URI = click.textContent || click.innerText;
+                                    if (click.tagName.toLowerCase() === 'iconclickthrough') {
+                                        icon.iconClicks.push(icNode);
+                                        icon.iconClicks.iconClickThrough.push(icNode);
+                                    } else if (click.tagName.toLowerCase === 'iconclicktracking') {
+                                        icNode.id = click.getAttribute('id');
+                                        icon.iconClicks.iconClickTracking.push(icNode);
+                                    }
+                                });
+                            }
+                            linearAd.icons.push(icon);
                         });
                     }
                     creative.linearAd = linearAd;
+                }
+                // handling nonlinear ads
+                if (nonlinearAdNode[0]) {
+                    var nonLinear = nonlinearAdNode[0].getElementsByTagName('NonLinear'),
+                        trackingEvent = nonlinearAdNode[0].getElementsByTagName('TrackingEvents'),
+                        nonLinearAd = [],
+                        trackingEvents = [];
+                    [].map.call(nonLinear, (nonLinearNode) => {
+                        var nonLinear = {
+                            nonLinearClickThrough: [],
+                            nonLinearClickTracking: []
+                        };
+                        [].map.call(nonLinearNode.children, (node) => {
+                            switch (node.tagName.toLowerCase()) {
+                                case 'staticresource':
+                                    nonLinear.staticResource = {
+                                        mimeType: node.getAttribute('creativeType'),
+                                        URI: node.textContent || node.innerText
+                                    };
+                                    break;
+                                case 'iframeresource':
+                                    nonLinear.iframeResource = node.textContent || node.innerText;
+                                    break;
+                                case 'htmlresource':
+                                    nonLinear.HTMLResource = node.textContent || node.innerText;
+                                    break;
+                                case 'adparameters':
+                                    // not handled yet.
+                                    break;
+                                case 'nonlinearclickthrough':
+                                    nonLinear.nonLinearClickThrough.push(node.textContent || node.innerText);
+                                    break;
+                                case 'nonlinearclicktracking':
+                                    nonLinear.nonLinearClickTracking.push({
+                                        id: node.getAttribute('id'),
+                                        URI: node.textContent || node.innerText
+                                    });
+                                    break;
+                                default:
+                                    throw new Error('Parsing VASTResponse Error - Invalid NonLinear Element.');
+                            }
+                        });
+                        nonLinearAd.push(nonLinear);
+                    });
+                    creative.nonLinearAd = nonLinearAd;
+                }
+                // companion ad support
+                if (companionAdNode[0]) {
+                    // CompanionAds
+                    var companionAd = {
+                        required: null,
+                        companion: []
+                    }
+                    companionAd.required = companionAdNode[0].getAttribute('required');
+                    // Companion
+                    [].map.call(companionAdNode[0].children, (companionNode) => {
+                        var companion = {
+                            companionClickTracking: []
+                        };
+                        companion.width = companionNode.getAttribute('width');
+                        companion.height = companionNode.getAttribute('height');
+                        companion.id = companionNode.getAttribute('id');
+                        companion.assetWidth = companionNode.getAttribute('assetWidth');
+                        companion.assetHeight = companionNode.getAttribute('assetHeight');
+                        companion.expandedWidth = companionNode.getAttribute('expandedWidth');
+                        companion.expandedHeight = companionNode.getAttribute('expandedHeight');
+                        companion.apiFramework = companionNode.getAttribute('apiFramework');
+                        companion.adslotID = companionNode.getAttribute('asslotID');
+                        companion.pxratio = companionNode.getAttribute('pxratio');
+                        // Sub Element of Companion
+                        [].map.call(companionNode.children, (node) => {
+                            switch (node.tagName.toLowerCase()) {
+                                case 'staticresource':
+                                    companion.staticResource = {
+                                        mimeType: node.getAttribute('creativeType'),
+                                        URI: node.textContent || node.innerText
+                                    };
+                                    break;
+                                case 'iframeresource':
+                                    companion.iframeResource = node.textContent || node.innerText;
+                                    break;
+                                case 'htmlresource':
+                                    companion.HTMLResource = node.textContent || node.innerText;
+                                    break;
+                                case 'adparameters':
+                                    // not implemented yet
+                                    break;
+                                case 'alttext':
+                                    companion.altText = node.innerHTML;
+                                    break;
+                                case 'companionclickthrough':
+                                    companion.companionClickThrough = node.textContent || node.innerText ;
+                                    break;
+                                case 'companionclicktracking':
+                                    companion.companionClickTracking.push({
+                                        id: node.getAttribute('id'),
+                                        URI: node.textContent || node.innerText
+                                    });
+                                    break;
+                                case 'trackingevents':
+                                    companion.trackingEvents = this.parseTrackingEvents(node);
+                                    break;
+                                default:
+                                    throw new Error('Parsing VASTResponse Error - Invalid CompanionAds Element.');
+                            }
+                        });
+                        companionAd.companion.push(companion);
+                    });
+                    creative.companionAd = companionAd;
                 }
                 inlineAd.creatives.push(creative);
                 creativeNode = creativeNode.nextElementSibling;
             }
         }
-        console.log(inlineAd);
         return inlineAd;
     }
 
     parseWrapperAd(wrapper) {
-        
+
+    }
+
+    /**
+     * parse TrackingEvents and return 
+     * @param  {DOM object} trackingEvents - the element trackingEvents
+     * @return {array} - an array consisted of a series of trackings               
+     */
+    parseTrackingEvents(trackingEvents) {
+        var returnVal = [];
+        [].map.call(trackingEvents.children, (trackingNode) => {
+            returnVal.push({
+                event: trackingNode.getAttribute('event'),
+                offset: trackingNode.getAttribute('offset'),
+                URI: trackingNode.textContent || trackingEvents.innerText
+            });
+        });
+        return returnVal;
     }
 }
